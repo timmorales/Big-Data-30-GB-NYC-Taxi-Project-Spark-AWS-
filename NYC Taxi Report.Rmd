@@ -188,7 +188,7 @@ df_2019_full <- rbind(df12019,df22019,df32019,df42019,df52019,df62019,df72019,df
 
 2020
 
-```{r}
+```{r eval = FALSE}
 df12020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-01.csv")
 df22020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-02.csv")
 df32020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-03.csv")
@@ -203,7 +203,7 @@ df_total <- rbind(df_2020_full,df_2019_full, df_2018_full)
 
 ## FHV 
 
-```{r}
+```{r eval = FALSE}
 FHV2018<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/FHV2018Summary.csv")
 FHV20191<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-01.csv")
 FHV20192<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-02.csv")
@@ -228,7 +228,6 @@ FHV_total <- rbind(FHV2018,FHV20191,FHV20192,FHV20193,FHV20194,FHV20195,FHV20196
 FHV_total<-FHV_total%>%
 arrange(Year, Month, Day)
 #write.csv(FHV_total, "/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.csv")
-FHV_total<-read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.csv")
 ```
 
 # Analysis 
@@ -237,6 +236,7 @@ FHV_total<-read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.
 
 I combine the dataframes together below and continue with some EDA and visualization.
 ```{r}
+FHV_total<-read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.csv")
 # 
 # df_ts <- df_total %>%
 #   arrange(Year, Month, Day)
@@ -248,12 +248,14 @@ I combine the dataframes together below and continue with some EDA and visualiza
 #write.csv(df_ts,"/Users/timmorales/Desktop/taxi_data/Summaries/summary_complete.csv")
 
 df_ts <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_complete.csv")
-df_ts$Date <- inds <- seq(as.Date("2018-01-01"), as.Date("2020-05-31"), by = "day")
+inds <- seq(as.Date("2018-01-01"), as.Date("2020-05-31"), by = "day")
+df_ts$Date <- <- seq(as.Date("2018-01-01"), as.Date("2020-05-31"), by = "day")
 ts <- ts(df_ts$n, start = c(2018, as.numeric(format(inds[1], "%j"))),
            frequency = 365)
 df_ts$Yellow_Taxi <- df_ts$n
 df_ts$For_Hire_Vehicle<- FHV_total$n
 
+#melting our data so we can create two lines in ggplot
 df_ggplot <- df_ts %>%
   select(Date, Yellow_Taxi, For_Hire_Vehicle) %>%
   gather(key = "Service Type", value = "value", -Date)
@@ -273,6 +275,10 @@ ggplot(df_ggplot, aes(x = Date, y = value)) +
 In our intial plot of the time series, we see the obvious drop due to COVID-19 for both service types. There is also a huge drop in the for hire vehicle pick ups do to the city's inforcement of "badges" for Uber, Lyft, etc in early 2019. This was done to protect the yellow cab system. 
 
 In terms of general trend, there seems to be a long term trend of a slight decrease in pick-ups dating to 2018 for yellow cabs. This raises a concern about stationarity in our data for the yellow cab series. 
+
+We can also see what appears to be weekly seasonality, with what we will assume to be increases in pick ups on the weekend.
+
+Excluding 2020 and pre-2019 for FHV, we see no real signs of a multiplicative effect. 
 
 With such a large decrease in pick ups for the for hire vehicles as a result of the policy change in early 2019, we will only use the time points after the FHV cap in our modeling of the FHV estimations. 
 
@@ -295,9 +301,138 @@ df_ggplot %>%
 
 When we zoom in and look at just 2020, we can see the drop off in pick ups is much more severe for the yellow cabs. The large drop in yellow cab pick ups corresponds exactly the pandemic striking in early - mid March. Although yellow cabs had dominated FHV in pick ups dating back to the cap introduced in 2019, once the pandemic hit, FHV took over as the main service for pickups. FHV also seem to be rebounding from the intial spike faster than yellow cabs. 
 
+2020 graph also shows that consistent variance in the seasonality and confirms there is not a really need for to take the log pre-march 2020. 
+
+## Yellow Cab 
+
+We begin the analysis conducting a SARIMA for the yellow cab time series. We want to see how the pandemic compares with what would have been the prediction without the pandemic striking. 
+
+Before the SARIMA we look at the spectral analysis.
+```{r}
+library(tswge)
+plotts.sample.wge(ts)
+```
+
+In the spectral analysis, we see a few things that confirm our initial thoughts. In the autocorrelation function, we see that there is a slow gradual decline in the autocorrelation suggesting an autoregressive model. In the periodogram, we see that there is some seasonality the model does not do well in understanding seen in the large spoke at 0, which is a bit concerning, but we also see spikes at frequencies around 0.14 suggesting that weekly seasonality we suggested. 
 
 
+Since we saw some general decreasing trend in the data, we look to see how the graph would look if we used some first order differencing. 
 
 ```{r}
+diff.ts <- diff(ts)
+
+plot.ts(diff.ts, ylab = "Difference in Pickups")
+title("Yellow Cab Time Series After First Order Differencing")
+```
+
+When we look at the first order difference we actually do see some inconsistent variance, so we will take the log. 
+
+```{r}
+log.ts <- log(ts)
+ts.final <- diff(log.ts)
+
+plot.ts(ts.final, ylab = "Log Difference in Pickups")
+title("Yellow Cab Time Series After First Order Differencing and Log")
+```
+
+Looking at the graph, the log and differncing creates a relatively stable time series. We just need to drop the post February information. 
+
+```{r}
+ts.final <- ts.final[1:789]
+ts.plot(ts.final)
+```
+
+Finally, we fit the SARIMA using the get.best.arima function and taking the minimum AIC optimiziation below allowing parameter values to be a max of 5. I do this in parrallel. There is a maximum of 350 lags in the arima function, so I use the 350 latest lags. 
+
+```{r eval = FALSE}
+library(doParallel)
+cl <- parallel::makeCluster(3, setup_strategy = "sequential")
+registerDoParallel(cl)
+#define our get best arima with seasonal 
+get.best.arima <- function(x.ts, maxord=c(1,1,1,1,1,1))
+ {
+   best.aic <- 1e8
+   n <- length(x.ts)
+   for(p in 0:maxord[1]) for (d in 0:maxord[2]) for (q in 0:maxord[3])
+     for(P in 0:maxord[4]) for (D in 0:maxord[5]) for (Q in 0:maxord[6])
+      {
+        fit <- arima(x.ts, order = c(p,d,q),
+                           seas = list(order = c(P,D,Q),
+                           frequency(x.ts)), method = "CSS")
+        fit.aic <- -2 * fit$loglik + (log(n) + 1) * length(fit$coef)
+        if (fit.aic < best.aic)
+       {
+           best.aic <- fit.aic
+           best.fit <- fit
+           best.model <- c(p,d,q,P,D,Q)
+        }
+   }
+   list(best.aic, best.fit, best.model)
+}
+
+fitting.taxi <- log.ts[439:789]
+get.best.arima(fitting.taxi,maxord = c(5,5,5,5,5,5))
+stopCluster(cl)
+```
+
+Since the above code takes so long to run, I just show a picture of the results below. 
+
+[Results](/Users/timmorales/Desktop/Screen Shot 2020-12-08 at 6.00.26 PM.png)
+
+We see that the best model if an SARIMA(3,0,5,5,1,3). It is interesting that it opted for the seasonal differencing. 
+
+We then fit that optimal model 
+```{r}
+library(forecast)
+opt.taxi<-arima(fitting.taxi,order=c(3,0,5), seasonal = list(order=c(5,1,3),frequency(fitting.taxi)),method = "CSS")
+
+
+checkresiduals(opt.taxi)
+```
+
+The residual plots look good and very much like white noise except for a few points, which we assume to be something like holidays potentially. 
+
+I conduct a ljungbox to test lag 1 auto correlation in residuals. 
+```{r}
+Box.test(opt.taxi$residuals, lag = 1, type = c( "Ljung-Box"))
+```
+
+We fail to say there is signficant autocorrelation. We are confident in trusting this models predictions. 
+
+Below I get some predictions for the COVID months to compare what was projected and was actually was for yellow cab pick ups. 
+
+Although the data was in log form, I do not use the correction factor since it was not in terms of means. 
+
+Below is a plot with a 95% confidence interval for the yellow cab pick up numbers. 
+```{r}
+
+forecast.taxi<-forecast(opt.taxi,level=c(95),h=93)
+forecast.taxi$x <-exp(forecast.taxi$x)
+forecast.taxi$fitted <-exp(forecast.taxi$fitted)
+forecast.taxi$mean<-exp(forecast.taxi$mean)
+forecast.taxi$upper<-exp(forecast.taxi$upper)
+forecast.taxi$lower<-exp(forecast.taxi$lower)
+autoplot(forecast.taxi, main="SARIMA Predictions Yellow Cabs For 2020", ylab='Pick Ups')
+
+min(forecast.taxi$lower)
+```
+
+We see the lowest points of the 95 confidence intervals through May are around 136,101 daily pick up.s 
+
+```{r}
+#i make the prediction 
+pred.taxi<-predict(opt.taxi, n.ahead=93)
+# i adjust for the log transform 
+pred.taxi$pred<- exp(pred.taxi$pred)
+pred.inds <- seq(as.Date("2020-03-01"), as.Date("2020-05-31"), by = "day")
+pred.ts <- ts(pred.taxi$pred, start = c(2020, as.numeric(format(pred.inds[1], "%j"))),
+           frequency = 365)
+
+#the plot
+ts.plot(ts,pred.ts,col=c("black","red"), main="",ylab="Daily Pick Ups")
+abline(h=136101, lty=3)
+title("How Drastic COVID Was For Yellow Cab Pick Ups")
+
+
 
 ```
