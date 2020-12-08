@@ -1,0 +1,303 @@
+---
+title: "Final Project 6306"
+author: "Tim Morales"
+date: "12/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Objective
+
+Although many different regions have taken large hits to buisness during the global pandemic, few cities in the world were hit as hard as New York City. Claimed to be the epicenter during the initial wave of COVID-19, New York City has seen huge loses to local business across a variety of industries including one that is a staple to the city itself, yellow cabs. Yellow cabs have covered the streets of New York City for decades, but with the rise of COVID-19, finds itself in trying times. 
+
+In this paper, we look at how the pandemic has affected NYC yellow cabs using individual pick up data from January 1, 2018 and May 31st, 2020. We compare the effects of the pandemic on yellow cabs in comparison to its main compition, for hire vehicles including Lyft and Uber. Through collecting, processing and summarizing over 33GB of individual ride information from the NYC Taxi and Limousine Commission, we use a time series approach to showing how COVID-19 has hurt NYC yellow cab predictions in comparision to it for hire competitors. 
+
+# Data Manipulation 
+
+When understanding the data collection, ther are a few things to note within the code. There were multiple instances of recording error especially for yellow cab individual ride data, for those errors, whether it be that the data was placed in the incorrect dataframe or the year was incorrect. Those obseravtions were dropped as we cannot justify a proper way to solve or assure the true meaning behind those recording. 
+
+Below is the Sparklyr Code used in collaberation with an AWS EMR cluster to process the for hire vehicle information.
+
+```{r eval = FALSE}
+
+install.packages("sparklyr")
+install.packages("tidyverse")
+library(sparklyr)
+library(tidyverse)
+
+config <- spark_config()                            # Create a config to tune memory
+config[["sparklyr.shell.driver-memory"]] <- "20G"   # Set driver memory to 20GB
+
+sc <- spark_connect(master = "yarn",               # Connect to the AWS Cluster
+                    config = config,
+                    spark_home = "/usr/lib/spark")  # This is where AWS puts the Spark Code
+
+#I read in all the data stored in S3 ~ 18.8 GB
+DATA_ALL <- spark_read_csv (sc,
+                            "data",
+                            "s3://stat6306studentfilebucket/Tim Morales/FHV/*.csv")
+
+## BELOW IS FOR 2018
+# Multiple iterations due to changes in labeling 
+
+#Select only pick up data
+Step1 <- DATA_ALL %>%
+  select(Pickup_DateTime)%>%
+  filter(Pickup_DateTime != "Pickup_DateTime") #omit column names if loading error
+
+#spliting date variable 
+Step2 <- Step1  %>% 
+  mutate(Pickup_DateTimeSplit = split(Pickup_DateTime, "-")) %>% 
+  sdf_separate_column("Pickup_DateTimeSplit", into = c("Year", "Month", "Day_Time"))
+
+#spliting day variable
+Step3 <- Step2  %>% 
+  mutate(Day_TimeSplit = split(Day_Time, " ")) %>% 
+  sdf_separate_column("Day_TimeSplit", into = c("Day", "Time"))
+
+#making numeric and creating a summary
+Step4 <-Step3 %>% filter(Year >= 2018)%>%
+  mutate(Year = as.numeric(Year),
+         Month = as.numeric(Month),
+         Day = as.numeric(Day),
+  )%>%
+  group_by(Year, Month, Day)%>%    #count every single pick up for 
+  summarise(n = n())              #each day each month each year
+                      
+                      
+Final <- Step4 %>% collect()            #collecting into a dataframe.      
+
+##BELOW I REPEAT THE PROCESS FOR THE 2019-2020 DATA
+#NOTICE DIFFERENT NAMING
+Step1 <- DATA_ALL %>%
+  select(pickup_datetime)%>%
+  filter(pickup_datetime != "pickup_datetime")
+
+Step2 <- Step1  %>% 
+  mutate(pickup_datetimesplit = split(pickup_datetime, "-")) %>% 
+  sdf_separate_column("pickup_datetimesplit", into = c("Year", "Month", "Day_Time"))
+
+
+Step3 <- Step2  %>% 
+  mutate(Day_TimeSplit = split(Day_Time, " ")) %>% 
+  sdf_separate_column("Day_TimeSplit", into = c("Day", "Time"))
+
+
+Step4 <-Step3 %>% filter(Year >= 2018)%>%
+  mutate(Year = as.numeric(Year),
+         Month = as.numeric(Month),
+         Day = as.numeric(Day),
+  )%>%
+  group_by(Year, Month, Day)%>%
+  summarise(n = n())
+
+
+Final1920 <- Step4 %>% collect()                  
+
+
+Final1920 <- Final1920 %>%
+  arrange(Year, Month, Day)
+
+#WRITE TO BUCKET
+spark_write_csv (Step4, 
+                 "s3://stat6306studentfilebucket/Tim Morales/Fullsets/FHV2018Summary.csv", # => File location where this will be saved
+                 header = TRUE, 
+                 mode = "overwrite",
+                 charset = "UTF-8")
+write.csv(Final,"s3://stat6306studentfilebucket/Tim Morales/Fullsets/FHV2018Summary.csv")
+aws.s3::put_object("FHV2018Summary.csv",
+                   file = "FHV2018Summary.csv",
+                   bucket = "s3://stat6306studentfilebucket/Tim Morales/Fullsets/")
+```
+
+Below you can see the code used for the NYC yellow cab data. This was done within my local computer at the same time as the AWS cluster. Notice this was done in a loop and only 1 iteration is shown. . 
+
+```{r eval=FALSE}
+#i read in the file for the year and month
+df <- read.csv(file="/Users/timmorales/Desktop/fhv_data/fhv_tripdata_2020-05.csv")
+library(tidyverse)
+head(df)
+
+#i select the date variable 
+Step1 <- df %>%
+  select(pickup_datetime)%>%
+  separate(pickup_datetime, c("Year","Month","Day_Time"),sep = "-")%>% #separate date
+  separate(Day_Time, c("Day", "Time"), sep = " ")%>% #finish date separation 
+  filter(Year >= 2018)%>% #help avoid recording errors and slowing computation
+  mutate(Year = as.numeric(Year), #summarize by month, year, day
+         Month = as.numeric(Month),
+         Day = as.numeric(Day),
+  )%>%
+  group_by(Year, Month, Day)%>%
+  summarise(n = n())
+
+test = Step1%>%
+  filter(Month == 5, Year == 2020)
+
+#saving as CSV
+write.csv(test, "/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2020-05.csv")
+
+
+```
+
+With those summary tables I have created I will use the rbind function to unit them. 
+ 
+Below I review each dataframe individual and make sure they load properly and functionally. I also go through each to check for any issues. I do so for each month, each year, each vehicle type. 
+
+```{r eval = FALSE}
+df12018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-01.csv")
+df22018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-02.csv")
+df32018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-03.csv")
+df42018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-04.csv")
+df52018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-05.csv")
+df62018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-06.csv")
+df72018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-07.csv")
+df82018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-08.csv")
+df92018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-09.csv")
+df102018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-10.csv")
+df112018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-11.csv")
+df122018 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2018-12.csv")
+
+df_2018_full <- rbind(df12018,df22018,df32018,df42018,df52018,df62018,df72018,df82018,df92018,df102018,df112018,df12018)
+
+
+
+```
+
+2019
+
+```{r eval = FALSE}
+df12019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-01.csv")
+df22019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-02.csv")
+df32019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-03.csv")
+df42019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-04.csv")
+df52019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-05.csv")
+df62019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-06.csv")
+df72019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-07.csv")
+df82019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-08.csv")
+df92019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-09.csv")
+df102019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-10.csv")
+df112019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-11.csv")
+df122019 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2019-12.csv")
+
+df_2019_full <- rbind(df12019,df22019,df32019,df42019,df52019,df62019,df72019,df82019,df92019,df102019,df112019,df12019)
+
+```
+
+2020
+
+```{r}
+df12020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-01.csv")
+df22020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-02.csv")
+df32020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-03.csv")
+df42020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-04.csv")
+df52020 <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_yellow_tripdata_2020-05.csv")
+
+df_2020_full <- rbind(df12020,df22020,df32020,df42020,df52020)
+
+
+df_total <- rbind(df_2020_full,df_2019_full, df_2018_full)
+```
+
+## FHV 
+
+```{r}
+FHV2018<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/FHV2018Summary.csv")
+FHV20191<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-01.csv")
+FHV20192<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-02.csv")
+FHV20193<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-03.csv")
+FHV20194<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-04.csv")
+FHV20195<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-05.csv")
+FHV20196<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-06.csv")
+FHV20197<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-07.csv")
+FHV20198<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-08.csv")
+FHV20199<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-09.csv")
+FHV201910<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-10.csv")
+FHV201911<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-11.csv")
+FHV201912<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2019-12.csv")
+FHV20201<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2020-01.csv")
+FHV20202<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2020-02.csv")
+FHV20203<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2020-03.csv")
+FHV20204<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2020-04.csv")
+FHV20205<- read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_fhv_2020-05.csv")
+
+FHV_total <- rbind(FHV2018,FHV20191,FHV20192,FHV20193,FHV20194,FHV20195,FHV20196,FHV20197,FHV20198,FHV20199,FHV201910,FHV201911,FHV201912,FHV20201,FHV20202,FHV20203,FHV20204,FHV20205)
+
+FHV_total<-FHV_total%>%
+arrange(Year, Month, Day)
+#write.csv(FHV_total, "/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.csv")
+FHV_total<-read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.csv")
+```
+
+# Analysis 
+
+## EDA
+
+I combine the dataframes together below and continue with some EDA and visualization.
+```{r}
+# 
+# df_ts <- df_total %>%
+#   arrange(Year, Month, Day)
+# 
+# 
+# 
+
+
+#write.csv(df_ts,"/Users/timmorales/Desktop/taxi_data/Summaries/summary_complete.csv")
+
+df_ts <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_complete.csv")
+df_ts$Date <- inds <- seq(as.Date("2018-01-01"), as.Date("2020-05-31"), by = "day")
+ts <- ts(df_ts$n, start = c(2018, as.numeric(format(inds[1], "%j"))),
+           frequency = 365)
+df_ts$Yellow_Taxi <- df_ts$n
+df_ts$For_Hire_Vehicle<- FHV_total$n
+
+df_ggplot <- df_ts %>%
+  select(Date, Yellow_Taxi, For_Hire_Vehicle) %>%
+  gather(key = "Service Type", value = "value", -Date)
+
+
+ggplot(df_ggplot, aes(x = Date, y = value)) + 
+  geom_line(aes(color = `Service Type`)) + 
+  scale_color_manual(values = c("steelblue", "darkgrey"))+
+  scale_x_date(date_breaks = "20 weeks",date_labels = "%b %Y")+
+  xlab("")+
+  ylab("Number of Pick Ups")+
+  ggtitle("NYC Yellow Cap vs For Hire Vehicle (Jan 2018 - May 2020)")
+
+
+```
+
+In our intial plot of the time series, we see the obvious drop due to COVID-19 for both service types. There is also a huge drop in the for hire vehicle pick ups do to the city's inforcement of "badges" for Uber, Lyft, etc in early 2019. This was done to protect the yellow cab system. 
+
+In terms of general trend, there seems to be a long term trend of a slight decrease in pick-ups dating to 2018 for yellow cabs. This raises a concern about stationarity in our data for the yellow cab series. 
+
+With such a large decrease in pick ups for the for hire vehicles as a result of the policy change in early 2019, we will only use the time points after the FHV cap in our modeling of the FHV estimations. 
+
+
+```{r}
+library(lubridate)
+df_ggplot %>% 
+  filter(Date > ymd(20200101))%>%
+  ggplot(aes(x = Date, y = value)) + 
+  geom_line(aes(color = `Service Type`)) + 
+  scale_color_manual(values = c("steelblue", "darkgrey"))+
+  scale_x_date(date_breaks = "20 days",date_labels = "%d %b")+
+  xlab("")+
+  ylab("Number of Pick Ups")+
+  ggtitle("Yellow Cab vs For Hire Vehicle (2020)")
+
+
+
+```
+
+When we zoom in and look at just 2020, we can see the drop off in pick ups is much more severe for the yellow cabs. The large drop in yellow cab pick ups corresponds exactly the pandemic striking in early - mid March. Although yellow cabs had dominated FHV in pick ups dating back to the cap introduced in 2019, once the pandemic hit, FHV took over as the main service for pickups. FHV also seem to be rebounding from the intial spike faster than yellow cabs. 
+
+
+
+
+```{r}
+
+```
