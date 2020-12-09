@@ -236,6 +236,7 @@ arrange(Year, Month, Day)
 
 I combine the dataframes together below and continue with some EDA and visualization.
 ```{r}
+library(tidyverse)
 FHV_total<-read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.csv")
 # 
 # df_ts <- df_total %>%
@@ -249,7 +250,7 @@ FHV_total<-read.csv("/Users/timmorales/Desktop/fhv_data/Summaries/summary_total.
 
 df_ts <- read.csv("/Users/timmorales/Desktop/taxi_data/Summaries/summary_complete.csv")
 inds <- seq(as.Date("2018-01-01"), as.Date("2020-05-31"), by = "day")
-df_ts$Date <- <- seq(as.Date("2018-01-01"), as.Date("2020-05-31"), by = "day")
+df_ts$Date <- seq(as.Date("2018-01-01"), as.Date("2020-05-31"), by = "day")
 ts <- ts(df_ts$n, start = c(2018, as.numeric(format(inds[1], "%j"))),
            frequency = 365)
 df_ts$Yellow_Taxi <- df_ts$n
@@ -310,7 +311,7 @@ We begin the analysis conducting a SARIMA for the yellow cab time series. We wan
 Before the SARIMA we look at the spectral analysis.
 ```{r}
 library(tswge)
-plotts.sample.wge(ts)
+spectral.yellow <-plotts.sample.wge(ts)
 ```
 
 In the spectral analysis, we see a few things that confirm our initial thoughts. In the autocorrelation function, we see that there is a slow gradual decline in the autocorrelation suggesting an autoregressive model. In the periodogram, we see that there is some seasonality the model does not do well in understanding seen in the large spoke at 0, which is a bit concerning, but we also see spikes at frequencies around 0.14 suggesting that weekly seasonality we suggested. 
@@ -403,10 +404,10 @@ Below I get some predictions for the COVID months to compare what was projected 
 
 Although the data was in log form, I do not use the correction factor since it was not in terms of means. 
 
-Below is a plot with a 95% confidence interval for the yellow cab pick up numbers. 
+Below is a plot with a 99.99% confidence interval for the yellow cab pick up numbers. 
 ```{r}
 
-forecast.taxi<-forecast(opt.taxi,level=c(95),h=93)
+forecast.taxi<-forecast(opt.taxi,level=c(99.9),h=93)
 forecast.taxi$x <-exp(forecast.taxi$x)
 forecast.taxi$fitted <-exp(forecast.taxi$fitted)
 forecast.taxi$mean<-exp(forecast.taxi$mean)
@@ -414,10 +415,10 @@ forecast.taxi$upper<-exp(forecast.taxi$upper)
 forecast.taxi$lower<-exp(forecast.taxi$lower)
 autoplot(forecast.taxi, main="SARIMA Predictions Yellow Cabs For 2020", ylab='Pick Ups')
 
-min(forecast.taxi$lower)
+lowest.lowerbound.value<-min(forecast.taxi$lower)
 ```
 
-We see the lowest points of the 95 confidence intervals through May are around 136,101 daily pick up.s 
+We see the lowest points of the 99.9% confidence intervals through May are around 108,589 daily pick ups 
 
 ```{r}
 #i make the prediction 
@@ -430,9 +431,128 @@ pred.ts <- ts(pred.taxi$pred, start = c(2020, as.numeric(format(pred.inds[1], "%
 
 #the plot
 ts.plot(ts,pred.ts,col=c("black","red"), main="",ylab="Daily Pick Ups")
-abline(h=136101, lty=3)
+abline(h=lowest.lowerbound.value, lty=3, col = "red")
 title("How Drastic COVID Was For Yellow Cab Pick Ups")
 
+```
 
+We can see how devasting the pandemic was for the yellow cabs and how drastic the differnce us between projection and actuality. Even when having 99.9% confidence, our predictions are wrong within a matter of days. 
+
+## For Hire Vehicles
+ 
+Now we turn our focus to the FHV and see how drastic the pandemic was for this service in comparision. As mentioned before we will only focus on from february 2019 forward due to the policy changes within the city. 
+
+```{r}
+#i respecify the indicies to make sure
+inds <- seq(as.Date("2019-02-01"), as.Date("2020-05-31"), by = "day")
+ts.fhv <- ts(FHV_total$n[397:882], start = c(2019, as.numeric(format(inds[1], "%j"))),
+           frequency = 365)
 
 ```
+
+Spectral Analysis 
+
+```{r}
+spectral<-plotts.sample.wge(ts.fhv)
+```
+
+In the spectral analysis we see some very similar things to the yellow cab analysis with the large spikes in frequency corresponding to weekly cycles. We also see some seasonality its stuggling to identify. The time series plot itself is interesting as there are random spikes and decreases seen at times ~30 and ~200. This suggests it may be difficult to model.
+
+We use a log transform for the inconsistent variance throughough.
+```{r}
+log.ts.fhv<-log(ts.fhv)
+plot.ts(log.ts.fhv, ylab = "Log Difference in Pickups")
+title("FHV Time Series After First Order Differencing and Log")
+
+```
+
+The log transformation seems to really help with the mutliplciative effect. Since there are obvious needs for some pretty severe differencing, we just fit the optimal SARIMA using the same function as above. 
+
+```{r eval = FALSE}
+library(doParallel)
+cl <- parallel::makeCluster(3, setup_strategy = "sequential")
+registerDoParallel(cl)
+#define our get best arima with seasonal 
+get.best.arima <- function(x.ts, maxord=c(1,1,1,1,1,1))
+ {
+   best.aic <- 1e8
+   n <- length(x.ts)
+   for(p in 0:maxord[1]) for (d in 0:maxord[2]) for (q in 0:maxord[3])
+     for(P in 0:maxord[4]) for (D in 0:maxord[5]) for (Q in 0:maxord[6])
+      {
+        fit <- arima(x.ts, order = c(p,d,q),
+                           seas = list(order = c(P,D,Q),
+                           frequency(x.ts)), method = "CSS")
+        fit.aic <- -2 * fit$loglik + (log(n) + 1) * length(fit$coef)
+        if (fit.aic < best.aic)
+       {
+           best.aic <- fit.aic
+           best.fit <- fit
+           best.model <- c(p,d,q,P,D,Q)
+        }
+   }
+   list(best.aic, best.fit, best.model)
+}
+
+
+get.best.arima(log.ts.fhv[43:393],maxord = c(5,5,5,5,5,5))
+stopCluster(cl)
+```
+
+[Results](/Users/timmorales/Desktop/Screen Shot 2020-12-08 at 7.44.36 PM.png)
+
+We see the results are an SARIMA(5,0,4,4,1,5)
+
+```{r}
+library(forecast)
+opt.fhv<-arima(log.ts.fhv[43:393],order=c(5,0,4), seasonal = list(order=c(4,1,5),frequency(fitting.taxi)),method = "CSS")
+
+
+checkresiduals(opt.fhv)
+
+```
+
+Although there do seem to be some random spikes in the residuals that the model struggles with, it again may be due to thing like holidays. We again follow up with a Ljung-Box test.
+
+```{r}
+Box.test(opt.fhv$residuals, lag = 1, type = c( "Ljung-Box"))
+
+```
+
+We again fail to reject the null hypothesis that there is autocorrelation in the residuals. We therefore believe that these predictions will be reasonible and continue with the analysis. 
+
+We continue with the same analysis getting the forecast with a confidence interval at the 99.9% confidence level, but this time for FHV.
+
+```{r}
+
+forecast.fhv<-forecast(opt.fhv,level=c(99.9),h=93)
+forecast.fhv$x <-exp(forecast.fhv$x)
+forecast.fhv$fitted <-exp(forecast.fhv$fitted)
+forecast.fhv$mean<-exp(forecast.fhv$mean)
+forecast.fhv$upper<-exp(forecast.fhv$upper)
+forecast.fhv$lower<-exp(forecast.fhv$lower)
+autoplot(forecast.fhv, main="SARIMA Predictions FHV For 2020", ylab='Pick Ups', color= 'red')
+
+lowest.lowerbound.value<-min(forecast.fhv$lower)
+```
+Interestingly, the model does not have very strong confidence and has a pretty large interval especially in the increasing direction. 
+
+We see the lowest points of the 99.9% confidence intervals through May are around 6,668 daily pick ups.
+
+```{r}
+#i make the prediction 
+pred.fhv<-predict(opt.fhv, n.ahead=93)
+# i adjust for the log transform 
+pred.fhv$pred<- exp(pred.fhv$pred)
+pred.inds <- seq(as.Date("2020-03-01"), as.Date("2020-05-31"), by = "day")
+pred.ts.fhv <- ts(pred.fhv$pred, start = c(2020, as.numeric(format(pred.inds[1], "%j"))),
+           frequency = 365)
+
+#the plot
+ts.plot(ts.fhv,pred.ts.fhv,col=c("black","brown"), main="",ylab="Daily Pick Ups")
+abline(h=lowest.lowerbound.value, lty=3, col = c("red"))
+title("How Drastic COVID Was For FHV Pick Ups")
+
+```
+
+Interestingly, we see that these COVID-19 drop offs are actually WITHIN the 99.9% confidence intervals for the FHV vehicles! 
